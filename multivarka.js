@@ -2,256 +2,220 @@
 const Promise = require('bluebird');
 const MongoClient = Promise.promisify(require('mongodb').MongoClient);
 
-function MultivarkaDB() {}
-
-function errorHandler(error) {
-    console.log(error);
+function MultivarkaDB() {
+    this.state = 0;
 }
+
+MultivarkaDB.prototype.close = function (data) {
+    //console.log(data);
+    if (this.db != undefined) {
+        this.db.close();
+    }
+};
 
 //подключение
 function connectToDB(nameserver) {
-    //console.log('trying connection', nameserver);
+    this.state = 1;
     return MongoClient.connect(nameserver);
 }
 
 MultivarkaDB.prototype.server = function (nameServer) {
     this.promise = Promise.resolve(nameServer)
-        .then(connectToDB)
-        .catch(errorHandler);
+        .bind(this)
+        .then(connectToDB);
     return this;
 };
 
-//создание таблицы
-function getTableFromDb(nameTable, currentMult) {
+//создание коллекции
+function getTableFromDb(nameTable) {
     return function (db) {
-        currentMult.db = db;
-        currentMult.table = db.collection(nameTable);
-        return {table: currentMult.table,
-            db: db,
-            not: false};
+        this.db = db;
+        this.state = 2;
+        return db.collection(nameTable);
     };
 }
 
 MultivarkaDB.prototype.collection = function (nameTable) {
     this.promise = this.promise
-        .then(getTableFromDb(nameTable, this))
-        .catch(errorHandler);
+        .then(getTableFromDb(nameTable));
     return this;
 };
-
-//выбор колонки
-function setColumn(nameColumn) {
-    return function (gettingDataOfTable) {
-        var data = gettingDataOfTable;
-        data.column = nameColumn;
-        return data;
-    };
-}
 
 MultivarkaDB.prototype.where = function (nameColumn) {
-    this.promise = this.promise
-        .then(setColumn(nameColumn))
-        .catch(errorHandler);
+    this.nameColumn = nameColumn;
     return this;
 };
 
-function setValue(value, action) {
-    return function (data) {
-        if (data.column != undefined) {
-            var currentSelect = {};
-            //console.log(currentSelect);
-            switch (action) {
-                case 'equal':
-                    currentSelect = value;
-                    break;
-                case 'lt':
-                    currentSelect.$lt = value;
-                    break;
-                case 'gt':
-                    currentSelect.$gt = value;
-                    break;
-                case 'include':
-                    currentSelect.$in = value;
-                    break;
-                case 'not':
-                    data.not = true;
-                    break;
-                default:
-                    throw new Error('There is no action ' + action);
-            }
-            data.conditions = {};
-            if (data.not) {
-                data.conditions[data.column] = {$ne: currentSelect};
-            } else {
-                data.conditions[data.column] = currentSelect;
-            }
-            return data;
-        } else {
-            throw new Error('You must use "where" before.');
-        }
-    };
-}
+MultivarkaDB.prototype.setValue = function (value, action) {
+    var currentSelect = {};
+    switch (action) {
+        case 'equal':
+            currentSelect = value;
+            break;
+        case 'lt':
+            currentSelect.$lt = value;
+            break;
+        case 'gt':
+            currentSelect.$gt = value;
+            break;
+        case 'include':
+            currentSelect.$in = value;
+            break;
+        case 'not':
+            this.not = true;
+            break;
+        default:
+            throw new Error('There is no action ' + action);
+    }
+    this.conditions = {};
+    if (this.not) {
+        this.conditions[this.nameColumn] = {$ne: currentSelect};
+    } else {
+        this.conditions[this.nameColumn] = currentSelect;
+    }
+};
+
 
 MultivarkaDB.prototype.equal = function (value) {
-    this.promise = this.promise
-        .then(setValue(value, 'equal'))
-        .catch(errorHandler);
+    this.setValue(value, 'equal');
     return this;
 };
 
 MultivarkaDB.prototype.lessThen = function (value) {
-    this.promise = this.promise
-        .then(setValue(value, 'lt'))
-        .catch(errorHandler);
+    this.setValue(value, 'lt');
     return this;
 };
 
 MultivarkaDB.prototype.greatThen = function (value) {
-    this.promise = this.promise
-        .then(setValue(value, 'gt'))
-        .catch(errorHandler);
+    this.setValue(value, 'gt');
     return this;
 };
 
 MultivarkaDB.prototype.include = function (values) {
-    this.promise = this.promise
-        .then(setValue(values, 'include'))
-        .catch(errorHandler);
+    this.setValue(values, 'include');
     return this;
 };
 
 MultivarkaDB.prototype.not = function () {
-    this.promise = this.promise
-        .then(setValue(undefined, 'not'))
-        .catch(errorHandler);
+    this.setValue(undefined, 'not');
     return this;
 };
 
 
 //кнопки
-function findIntoDb(callback) {
-    return function (getDataAboutTable) {
-        //console.log(getDataAboutTable);
-        var dataOfTable = getDataAboutTable;
-        //console.log(dataOfTable.conditions);
-        return dataOfTable.table.find(dataOfTable.conditions).toArray(
-            function (err, data) {
-                callback(err, data);
-                dataOfTable.db.close();
-            }
-        );
+
+//проверка подключения
+function checkConnection(table) {
+    if (this.state == 1) {
+        this.db = table;
+        throw new Error('Collection was not choosen');
+    } else if (this.state == 0) {
+        throw new Error('DB was not connected');
+    }
+    return table;
+}
+
+//для поиска по условиям
+function findIntoDb() {
+    return function (table) {
+        return table.find(this.conditions).toArray();
+    };
+}
+
+function outputUpdates() {
+    return this.table.find().toArray();
+}
+
+function invokeCallbackAfterSucsess(callback) {
+    return function (data) {
+        return callback(undefined, data);
+    };
+}
+
+function invokeCallbackAfterError(callback) {
+    return function (err) {
+        return callback(err);
     };
 }
 
 MultivarkaDB.prototype.find = function (callback) {
     this.promise
-        .then(findIntoDb(callback))
-        .catch(errorHandler);
+        .then(checkConnection)
+        .then(findIntoDb())
+        .then(invokeCallbackAfterSucsess(callback))
+        .catch(invokeCallbackAfterError(callback))
+        .finally(this.close);
 };
 
-function insertIntoDb(newElement, callback) {
-    return function (getDataAboutTable) {
-        var dataOfTable = getDataAboutTable;
-        var db = dataOfTable.db;
-        dataOfTable.table.insert(newElement);
-        dataOfTable.table.find().toArray(
-            function (err, result) {
-                callback(err, result);
-                db.close();
-            }
-        );
+function insertIntoDb(newElement) {
+    return function (table) {
+        this.table = table;
+        return table.insert(newElement);
     };
 }
 
-
 MultivarkaDB.prototype.insert = function (newElement, callback) {
     this.promise
-        .then(insertIntoDb(newElement, callback))
-        .catch(errorHandler);
+        .then(checkConnection)
+        .then(insertIntoDb(newElement))
+        .then(outputUpdates)
+        .then(invokeCallbackAfterSucsess(callback))
+        .catch(invokeCallbackAfterError(callback))
+        .finally(this.close);
 };
 
-function deleteDataFromDB(callback) {
-    return function (getDataAboutTable) {
-        //console.log(getDataAboutTable);
-        var dataOfTable = getDataAboutTable;
-        //console.log(dataOfTable.conditions);
-        dataOfTable.table.remove(dataOfTable.conditions);
-        var db = dataOfTable.db;
-        dataOfTable.table.find().toArray(
-            function (err, result) {
-                callback(err, result);
-                db.close();
-            }
-        );
+function deleteDataFromDB() {
+    return function (table) {
+        this.table = table;
+        return table.remove(this.conditions);
     };
 }
 
 
 MultivarkaDB.prototype.remove = function (callback) {
     this.promise
-        .then(deleteDataFromDB(callback))
-        .catch(errorHandler);
+        .then(checkConnection)
+        .then(deleteDataFromDB())
+        .then(outputUpdates)
+        .then(invokeCallbackAfterSucsess(callback))
+        .catch(invokeCallbackAfterError(callback))
+        .finally(this.close);
 };
 
 
-function setDataFromDB(column, newValue) {
-    return function (dataOfTable) {
-        //console.log(dataOfTable);
-        var dataForUpdate = {};
-        dataForUpdate[column] = newValue;
-        dataOfTable.updateValues = dataForUpdate;
-        return function () {
-            return dataOfTable;
-        };
-    };
-}
+MultivarkaDB.prototype.setDataFromDB = function (column, newValue) {
+    var dataForUpdate = {};
+    dataForUpdate[column] = newValue;
+    this.updateValues = dataForUpdate;
+};
 
-function update(dataOfTable1) {
-    var dataOfTable = dataOfTable1();
-    //console.log(dataOfTable);
-    if (dataOfTable.conditions == undefined) {
-        dataOfTable.conditions = {};
+function update(table) {
+    this.table = table;
+    if (this.conditions == undefined) {
+        this.conditions = {};
     }
-    return dataOfTable.table.update(
-        dataOfTable.conditions,
-        { $set: dataOfTable.updateValues}, {multi: true });
-    //var db = dataOfTable.db;
-    //dataOfTable.table.find().toArray(
-    //function (err, result) {
-    //callback(err, result);
-    //db.close();
-    //}
-    //);
+    return table.update(
+        this.conditions,
+        { $set: this.updateValues}, {multi: true });
 }
 
-
-function invokeCallback(callback, currentMult) {
-    return function () {
-        currentMult.table.find().toArray(
-            function (err, result) {
-                callback(err, result);
-                currentMult.db.close();
-            }
-        );
-    };
-}
 
 MultivarkaDB.prototype.set = function (nameColumn, newValue) {
-    this.promise = this.promise
-        .then(setDataFromDB(nameColumn, newValue))
-        .catch(errorHandler);
+    this.setDataFromDB(nameColumn, newValue);
     return this;
 };
 
 MultivarkaDB.prototype.update = function (callback) {
-    this.promise = this.promise
+    this.promise
+        .then(checkConnection)
         .then(update)
-        .then(invokeCallback(callback, this))
-        .catch(errorHandler);
+        .then(outputUpdates)
+        .then(invokeCallbackAfterSucsess(callback))
+        .catch(invokeCallbackAfterError(callback))
+        .finally(this.close);
 };
 
-function MultivarkaDBFactory() {
-}
+function MultivarkaDBFactory() {}
 
 MultivarkaDBFactory.prototype.server = function (nameServer) {
     return new MultivarkaDB().server(nameServer);
